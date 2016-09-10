@@ -1,0 +1,126 @@
+---
+title: "Prepping the Demographic Data"
+output: html_notebook
+---
+
+# Load Libraries
+
+```{r, message = FALSE}
+library(acs)
+library(tigris)
+library(dplyr)
+library(tidyr)
+library(sp)
+library(rgdal)
+library(raster)
+library(readr)
+```
+
+# Get the demographic data
+
+```{r}
+state <- 'MA'
+
+counties <- acs.fetch(geography=geo.make(state=state, county="*"), 
+				   endyear = 2014,
+				   table.number="B01003")
+counties <- as.numeric(geography(counties)[[3]])
+	
+race <- acs::acs.fetch(endyear = 2014,
+					   span = 5,
+					   geography = acs::geo.make(state = state, county = counties, tract = '*'),
+					   table.number = 'B03002',
+					   col.names = "pretty")
+```
+
+# Process the demographic data
+
+```{r}
+
+race <- cbind(data.frame(race@geography),
+				  data.frame(race@estimate)) %>%
+		tbl_df() %>%
+		mutate(GEOID = paste0(str_pad(state, 2, 'left', pad = '0'),
+							  str_pad(county, 3, 'left', pad = '0'),
+							  str_pad(tract, 6, 'left', pad = '0')))
+	
+race$Hispanic <- race[names(race)[!grepl('.Not.Hispanic.or.Latino.',names(race))]] %>%
+	dplyr::select(-(`NAME`:`Hispanic.or.Latino.by.Race..Hispanic.or.Latino.`)) %>%
+	dplyr::select(-GEOID) %>%
+	rowSums()
+	
+	others <- c('Hispanic.or.Latino.by.Race..Not.Hispanic.or.Latino..American.Indian.and.Alaska.Native.alone',
+				'Hispanic.or.Latino.by.Race..Not.Hispanic.or.Latino..Native.Hawaiian.and.Other.Pacific.Islander.alone',
+				'Hispanic.or.Latino.by.Race..Not.Hispanic.or.Latino..Some.other.race.alone',
+				'Hispanic.or.Latino.by.Race..Not.Hispanic.or.Latino..Two.or.more.races.',
+				'Hispanic.or.Latino.by.Race..Not.Hispanic.or.Latino..Two.or.more.races..Two.races.including.Some.other.race',
+				'Hispanic.or.Latino.by.Race..Not.Hispanic.or.Latino..Two.or.more.races..Two.races.excluding.Some.other.race..and.three.or.more.races')
+	
+	race$Other <- race[others] %>% rowSums()
+	
+	race <- race %>%
+		dplyr::select(Hispanic, Other,
+			   White = Hispanic.or.Latino.by.Race..Not.Hispanic.or.Latino..White.alone,
+			   Black = Hispanic.or.Latino.by.Race..Not.Hispanic.or.Latino..Black.or.African.American.alone,
+			   Asian = Hispanic.or.Latino.by.Race..Not.Hispanic.or.Latino..Asian.alone,
+			   GEOID) %>%
+		mutate(total = Hispanic + White + Black + Asian + Other)
+
+```
+
+# Check out the Tracts
+```{r, message = FALSE, warning = FALSE}
+	tracts <- tigris::block_groups(state = state, county = counties, cb=TRUE)
+	tracts@data$area <- tracts@data$ALAND / 1000^2
+	
+	tracts <- tigris::geo_join(tracts, race, "GEOID", "GEOID")
+	writeOGR(tracts, paste0('throughput/tracts'),'geo', driver = 'ESRI Shapefile', morphToESRI = TRUE)
+	plot(tracts)
+```
+
+# Construct the Grid
+
+```{r, warning = F, message = F}
+resolution <- 1
+
+radius <- 1/sqrt(85 * 111) * resolution # (roughly 1 km after lat-lon conversion)
+xx <- spsample(tracts, type="hexagonal", cellsize=radius)
+xxpl <- HexPoints2SpatialPolygons(xx)
+
+print(paste0(nrow(tracts@data), ' tracts || ', length(xx), ' grid cells'))
+
+writeOGR(tracts, paste0('throughput/grid'),'grid', driver = 'ESRI Shapefile', morphToESRI = TRUE)
+
+```
+
+# Relate the Grid to the Polygons
+
+```{r}
+
+cell_area <- rgeos::gArea(xxpl[1])
+
+d <- data_frame(cell = integer(), tract = numeric(), area = numeric())
+
+for(i in 1:10){ # for i in 1:nrow(xxpl)
+	window <- tracts[xxpl[i,],]
+	pi <- intersect(xxpl[i,], window)
+	# areas <- rgeos::gArea(pi, byid = T)
+	areas <- sapply(pi@polygons, function(x) x@area)
+	d <- rbind(d, data_frame(cell = i, tract = window@data$GEOID, area = areas))
+}
+
+names(d) <- c('cell', 'tract', 'area')
+d <- d %>%
+	group_by(cell) %>% 
+	mutate(weight = area / sum(area))
+d
+```
+
+```{r}
+write_csv(d, 'throughput/grid_tract.csv')
+write_csv(race, 'throughput/tract_demos.csv')
+```
+
+
+
+
