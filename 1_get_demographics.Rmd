@@ -24,6 +24,7 @@ state <- 'MA'
 counties <- acs.fetch(geography=geo.make(state=state, county="*"), 
 				   endyear = 2014,
 				   table.number="B01003")
+
 counties <- as.numeric(geography(counties)[[3]])
 	
 race <- acs::acs.fetch(endyear = 2014,
@@ -70,10 +71,24 @@ race$Hispanic <- race[names(race)[!grepl('.Not.Hispanic.or.Latino.',names(race))
 
 # Check out the Tracts
 ```{r, message = FALSE, warning = FALSE}
-	tracts <- tigris::block_groups(state = state, county = counties, cb=TRUE)
+	tracts <- tigris::tracts(state = state, county = counties, cb=TRUE)
 	tracts@data$area <- tracts@data$ALAND / 1000^2
 	
 	tracts <- tigris::geo_join(tracts, race, "GEOID", "GEOID")
+```	
+
+# Subset the tracts for our data set
+```{r}
+	col_classes <- c('character', 
+				 'integer', 
+				 'numeric', 
+				 'numeric', 
+				 'numeric', 
+				 'numeric', 
+				 'numeric')
+	data <- read_csv('throughput/space_time_profiles.csv')
+	IDs <- data$tract %>% unique() 
+	tracts <- tracts[tracts@data$GEOID %in% IDs,] 
 	writeOGR(tracts, paste0('throughput/tracts'),'geo', driver = 'ESRI Shapefile', morphToESRI = TRUE)
 	plot(tracts)
 ```
@@ -81,7 +96,7 @@ race$Hispanic <- race[names(race)[!grepl('.Not.Hispanic.or.Latino.',names(race))
 # Construct the Grid
 
 ```{r, warning = F, message = F}
-resolution <- 1
+resolution <- 2
 
 radius <- 1/sqrt(85 * 111) * resolution # (roughly 1 km after lat-lon conversion)
 xx <- spsample(tracts, type="hexagonal", cellsize=radius)
@@ -101,18 +116,18 @@ cell_area <- rgeos::gArea(xxpl[1])
 
 d <- data_frame(cell = integer(), tract = numeric(), area = numeric())
 
-for(i in 1:10){ # for i in 1:nrow(xxpl)
+for(i in 1:length(xxpl)){ # for i in 1:nrow(xxpl)
 	window <- tracts[xxpl[i,],]
 	pi <- intersect(xxpl[i,], window)
 	# areas <- rgeos::gArea(pi, byid = T)
 	areas <- sapply(pi@polygons, function(x) x@area)
-	d <- rbind(d, data_frame(cell = i, tract = window@data$GEOID, area = areas))
+	full_areas <- sapply(window@polygons, function(x) x@area)
+	d <- rbind(d, data_frame(cell = i, tract = window@data$GEOID, area = areas, full_area = full_areas))
 }
 
-names(d) <- c('cell', 'tract', 'area')
+names(d) <- c('cell', 'tract', 'area', 'full_area')
 d <- d %>%
-	group_by(cell) %>% 
-	mutate(weight = area / sum(area))
+	mutate(weight = area / full_area)
 d
 ```
 

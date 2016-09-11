@@ -49,4 +49,4 @@ tab <- joined[, j = list(
 			  White    = sum(White * N, na.rm = T)
 			  ), by    = list(tract, time)]
 
-write.csv(tab, 'throughput/space_time_profiles.csv')
+write.csv(tab, 'throughput/space_time_profiles.csv',row.names = FALSE)

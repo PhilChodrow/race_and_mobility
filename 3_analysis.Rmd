@@ -1,0 +1,380 @@
+---
+title: "Racial Trends in Daily Mobility"
+output: html_document
+---
+
+```{r}
+library(dplyr, quietly = T)
+library(compx, quietly = T)
+library(readr, quietly = T)
+library(tidyr, quietly = T)
+library(ggplot2, quietly = T)
+library(data.table, quietly = T)
+library(rgdal, quietly = T)
+library(maptools, quietly = T)
+library(ggthemes, quietly = T)
+library(scales, quietly = T)
+```
+
+
+# Introduction
+
+This document is Phil's analysis of racial trends in daily mobility in Boston, based on data provided by Shan and the TimeGeo team. 
+
+# Data Used
+
+I combined the TimeGeo output and data from the 2010 demographic census, and then summarised the data. The resulting table gives the estimated number of people in each racial group in each tract at a given time of day. 
+
+```{r}
+races <- c('Asian', 'Black', 'Hispanic', 'Other', 'White')
+col_classes <- c('character', 
+				 'integer', 
+				 'numeric', 
+				 'numeric', 
+				 'numeric', 
+				 'numeric', 
+				 'numeric')
+data <- read_csv('throughput/space_time_profiles.csv') %>% 
+	filter(!is.na(tract), !is.na(time), tract != -1)
+```
+
+# Notation
+
+We have $J$ racial groups labeled $y_j$, $j = 1,\ldots J$, $I$ tracts, labeled $x_i$, $i=1,\ldots,I$, and $T$ time periods labeled $t_k$, $k = 1,\ldots,K$. Let $p(x_i, y_j, t_k)$ denote the proportion of all user-time-periods that are observed in tract $x_j$ of race $y_i$ at time $t_k$. For compact notation, define $p_{ijk} \triangleq p(x_i, y_j, t_k)$. Similarly, define $p_{ij|k} \triangleq p(x_i, y_j | t_k)$ and so on. To apply the tools of information theory, we'll treat $p_{ijk}$ as an empirical probability distribution. 
+
+The *Kullback-Leibler Divergence* of $r$ from $q$ is defined as 
+$$D[q\|r] \triangleq \sum_{a \in \mathcal{A}} q(a) \log \frac{q(a)}{r(a)}\;,$$
+where $\mathcal{A}$ is the set of possible values of $a$. 
+
+# Measures
+
+## Tract-wise Diversity
+
+The residential racial entropy of tract $i$ at time $k$ is 
+$$D[p_{j|ik}\|u_j] = - \sum_j p_{j|ik} \log p_{j|ik}\;,$$
+where $u_j$ is the uniform distribution on race. 
+
+## Tract-Wise Temporal Variation
+
+## Global Racial Selection 
+
+We can also ask: how differently are members of racial group $j$ distributed in space from the overall population at some given time? A measure of this difference is the following divergence: 
+
+$$ GS_{jk}\triangleq D[p_{i|jk}\|p_{i|k}] = \sum_i p_{i|jk} \log \frac{p_{i|jk}}{p_{i|k}}$$
+
+```{r}
+
+tab <- data %>% 
+	mutate(total = Asian + Black + Hispanic + Other + White) %>% 
+	gather(key = race, value = n, -tract, -time) %>% 
+	group_by(time, race) %>% 
+	mutate(n = n / sum(n)) %>% 
+	spread(key = race, value = n) 
+
+f <- function(i){
+	tob <- tab %>% filter(time == i) 
+	return(c(DKL(tob$Asian, tob$total),
+			 DKL(tob$Black, tob$total),
+			 DKL(tob$Hispanic, tob$total),
+			 DKL(tob$Other, tob$total),
+			 DKL(tob$White, tob$total)
+			 ))
+}
+
+1:144 %>% 
+	as.matrix() %>% 
+	apply(MARGIN = 1, FUN = f) %>% 
+	t  %>% 
+	as.data.frame() %>% 
+	dplyr::rename(Asian = V1, 
+		   Black = V2, 
+		   Hispanic = V3, 
+		   Other = V4, 
+		   White = V5) %>% 
+	dplyr::mutate(time = row_number()) %>% 
+	gather(key = race, value = n, -time) %>% 
+	ggplot() + 
+	aes(x = time, y = n, group = race, color = race) +
+	geom_path()
+```
+
+
+
+
+## Tract-Wise Selection
+
+Another version of the same question above is: how different is the racial composition of tract $i$ from the average tract? A measure of this difference is the following divergence: 
+
+$$TS_{ik} \triangleq D[p_{j|ik}\|p_{j|k}] = \sum_i p_{j|ik} \log \frac{p_{j|ik}}{p_{j|k}}\;.$$
+
+
+```{r}
+
+temporal_means <- data %>% 
+	group_by(time) %>% 
+	summarise_each(funs = c('sum'), -tract, -time) %>% 
+	select(-time) %>% 
+	as.matrix() 
+
+temporal_means <- temporal_means / rowSums(temporal_means)
+
+
+tab <- data %>% group_by(tract, time) %>% 
+	summarise_each(funs = c('sum'), - tract, -time) %>% 
+	gather(key = race, value = n, -tract, -time) %>% 
+	group_by(tract, time) %>% 
+	mutate(p = n/sum(n)) %>% 
+	select(-n) %>% 
+	spread(key = race, value = p)
+
+# Find a way to vectorize
+f <- function(k){
+	p <- tab[k, races] %>% as.numeric()
+	q <- temporal_means[tab$time[k],]
+	DKL(p,q)
+}
+
+tab$D <- 1:nrow(tab) %>% as.matrix() %>% 
+	apply(MARGIN = 1, FUN = f)
+```
+
+```{r}
+tracts <- readOGR('throughput/tracts/', layer = 'geo', verbose = FALSE)
+```
+
+```{r}
+
+plot_tracts <- fortify(tracts,region = 'GEOID')
+
+to_join <- tab %>% ungroup() %>% 
+	filter(time %in% c(1,80, 144),
+						  !is.na(time)) %>% 
+	mutate(tract = as.character(tract)) %>% 
+	dplyr::select(time, tract, D)
+
+plot_tracts %>% 
+	left_join(to_join, by = c('id' = 'tract')) %>% 
+	filter(!is.na(time)) %>% 
+	ggplot() + 
+	aes(x = long, y = lat, group = group, fill = D) + 
+	geom_polygon(size = 0) +
+	facet_wrap(~time) + 
+	theme_map() +
+	scale_fill_continuous(limits = c(0,.5), oob=squish)
+
+```
+
+```{r}
+tab %>% 
+	filter(time %in% c(1, 80, 144)) %>% 
+	ggplot() + 
+	aes(x = D, fill = factor(time)) + 
+	geom_density(alpha = .3) + 
+	scale_x_log10()
+```
+
+```{r} 
+# check
+col_names <- c('id', 'time', 'tract', 'h_tract', 'type')
+col_class <- c('integer', 'integer', 'character', 'character', 'character')
+
+check <- fread(input = 'data/time_geo/simulationResults_30.txt',colClasses = col_class, col.names = col_names)
+
+test <- check[time %in% c(143,144)]
+
+test %>% tbl_df %>% 
+	spread(key = time, value = tract) %>% 
+	mutate(x = `143` == `144`) %>% 
+	mutate(x = ifelse(is.na(x), 0, x)) %>% 
+	summarise(x = mean(x))
+
+```
+
+
+
+
+## Tract-Wise Selection and Global Racial Selection
+
+The reason these two questions are versions of the same one is that the following identity holds: 
+
+$$ \sum_{j} p_{j|k} GS_{jk} = \sum_{i} p_{i|k}TS_{ik}$$
+i.e. at any time $k$, the average value of $GS$ is equal to the average value of $TS$. This shared value is the **mutual information** between race and space at time $k$. 
+
+```{r}
+
+time_info <- function(given_time){
+	data %>% 
+		filter(time == given_time) %>% 
+		select(-tract, time) %>% 
+		mutual_info()
+}
+
+v <- 1:144 %>% as.matrix() %>% apply(MARGIN = 1, FUN = time_info)
+plot(v) # weird: looks directionally right in terms of the state changes, but not cyclic. 
+```
+
+
+```{r}
+
+tract_wise <- data %>% 
+	gather(key = race, value = n, - tract, - time) %>% 
+	group_by(time, tract) %>% 
+	summarise(n = sum(n)) %>% 
+	ungroup()
+
+
+v <- 1:144 %>% 
+	as.matrix() %>% 
+	apply(MARGIN = 1, FUN = function(i) tract_wise %>% 
+		  	filter(time == i) %>% 
+		  	select(n) %>% 
+		  	simplex_normalize %>% H)
+	
+plot(v) # unexpected, check on this
+```
+
+
+
+
+
+```{r}
+
+f <- function(id){
+	data %>% 
+	filter(tract == id) %>% 
+	dplyr::select(-tract, -time) %>% 
+	mutual_info()
+}
+
+ids <- unique(data$tract)
+
+infos <- ids %>% as.matrix() %>% 
+	apply(MARGIN = 1, FUN = f)
+
+tab <- data_frame('tract' = ids, 'info' = infos) %>% 
+	mutate(tract = as.character(tract))
+
+plot_tracts %>% 
+	left_join(tab, by = c('id' = 'tract')) %>% 
+	ggplot() + 
+	aes(x = long, y = lat, group = group, fill = info) + 
+	geom_polygon(size = 0) +
+	theme_map() +
+	scale_fill_continuous(limits = c(0,.025), oob=squish)
+
+```
+
+
+# Spatial Information
+
+```{r}
+grid_tract <- read_csv('throughput/grid_tract.csv')
+```
+
+
+```{r}
+i = 1
+
+tab <- data %>% filter(time %in% c(1, 80, 144))
+
+cells <- grid_tract %>% left_join(tab)
+
+cells <- cells %>% mutate(Asian = Asian * weight,
+				 Black = Black * weight,
+				 Hispanic = Hispanic * weight,
+				 Other = Other * weight,
+				 White = White * weight)
+
+df <- expand.grid(unique(cells$cell), unique(tab$time))
+names(df) <- c('cell', 'time')
+
+f <- function(i){
+	cells %>% filter(cell == df$cell[i], time == df$time[i]) %>% 
+		dplyr::select(Asian, Black, Hispanic, Other, White) %>% 
+		mutual_info()
+}
+
+df$J <- 1:nrow(df) %>% as.matrix() %>% 
+	apply(MARGIN = 1, FUN = f)
+
+totals <- cells %>% 
+	mutate(total = Asian + Black + Hispanic + Other + White) %>% 
+	group_by(cell, time) %>% 
+	summarise(total = sum(total))  
+	
+df <- df %>% left_join(totals)
+```
+
+```{r}
+
+df %>%
+	ggplot() + 
+	aes(x = J, fill = factor(time)) + 
+	geom_density(alpha = .3) +
+	scale_x_log10()
+
+```
+
+
+```{r}
+df %>% group_by(time) %>% 
+	summarise(J = weighted.mean(J,w = total))
+```
+
+
+# Pairwise Racial Affinities
+```{r}
+
+pairs_df <- expand.grid(race1 = races, race2 = races, time = unique(data$time)) %>% tbl_df %>% 
+	mutate(race1 = as.character(race1),
+		   race2 = as.character(race2))
+
+normed <- data %>% 
+	group_by(time) %>% 
+	mutate(Asian = Asian / sum(Asian),
+		   Black = Black / sum(Black),
+		   Hispanic = Hispanic / sum(Hispanic),
+		   Other = Other / sum(Other),
+		   White = White / sum(White)) %>% 
+	mutate(total = Asian + Black + Hispanic + Other + White,
+				  total = total / sum(total)) 
+
+
+f <- function(r1, r2, i){
+	temp <- normed %>% filter(time == i)
+	DKL(temp[[r1]], temp[['total']]) + 
+	DKL(temp[[r2]], temp[['total']]) -
+	2*DKL((temp[[r1]] + temp[[r2]])/2,  temp[['total']])
+}
+
+pairs_df$dist <- mapply(f, pairs_df$race1, pairs_df$race2, pairs_df$time)
+
+```
+
+
+# Pairwise separations over time. 
+```{r}
+pairs_df %>% 
+	ggplot() + 
+	aes(x = time, y = dist) +
+	geom_path() + 
+	facet_grid(race1~race2)
+```
+
+# Average pairwise separations (or affinities)
+
+Darker colors indicate averaged mobility patterns that are more similar. 
+
+```{r}
+pairs_df %>% 
+	# mutate(dist = ifelse(race1 == race2, NA, dist)) %>% 
+	mutate(race1 = factor(race1, levels = c('Black', 'Hispanic', 'Other', 'Asian', 'White')),
+		   race2 = factor(race2, levels = c('Black', 'Hispanic', 'Other', 'Asian', 'White'))) %>% 
+	group_by(race1, race2) %>%
+	summarise(dist = mean(dist)) %>% 
+	ggplot() + 
+	aes(x = race1, y = race2, fill = -dist) +
+	geom_tile() + 
+	scale_fill_continuous(low = 'white', high = 'steelblue')
+
+```
