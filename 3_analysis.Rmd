@@ -147,7 +147,7 @@ tracts <- readOGR('throughput/tracts/', layer = 'geo', verbose = FALSE)
 plot_tracts <- fortify(tracts,region = 'GEOID')
 
 to_join <- tab %>% ungroup() %>% 
-	filter(time %in% c(1,80, 144),
+	filter(time %in% ((1:24)*6),
 						  !is.na(time)) %>% 
 	mutate(tract = as.character(tract)) %>% 
 	dplyr::select(time, tract, D)
@@ -158,9 +158,11 @@ plot_tracts %>%
 	ggplot() + 
 	aes(x = long, y = lat, group = group, fill = D) + 
 	geom_polygon(size = 0) +
-	facet_wrap(~time) + 
+	facet_wrap(~time,nrow = 6, ncol = 4) + 
 	theme_map() +
-	scale_fill_viridis(limits = c(0,.5), oob=squish)
+	scale_fill_viridis(limits = c(0,.75), oob=squish) +
+	theme(plot.background = element_rect(fill = "#333333")) 
+	
 
 ```
 
@@ -286,7 +288,7 @@ f <- function(in_cell, in_time){
 
 cells <- cells %>% select(-tract)
 
-x <- cells[time %in% ((1:1)*6)][, 
+df <- cells[time %in% ((1:1)*6)][, 
 	  info := mutual_info(.SD), 
 	  by = .(cell, time)]
 
@@ -303,8 +305,8 @@ df <- df %>% left_join(totals)
 ```{r}
 
 df %>%
-	ggplot() + 
-	aes(x = J, fill = factor(time)) + 
+	ggplot() +
+	aes(x = info, fill = factor(time)) +
 	geom_density(alpha = .3) +
 	scale_x_log10()
 
@@ -313,7 +315,7 @@ df %>%
 
 ```{r}
 df %>% group_by(time) %>% 
-	summarise(J = weighted.mean(J,w = total))
+	summarise(info = weighted.mean(info,w = total))
 ```
 
 
@@ -334,7 +336,6 @@ normed <- data %>%
 	mutate(total = Asian + Black + Hispanic + Other + White,
 				  total = total / sum(total)) 
 
-
 f <- function(r1, r2, i){
 	temp <- normed %>% filter(time == i)
 	DKL(temp[[r1]], temp[['total']]) + 
@@ -352,12 +353,18 @@ pairs_df$dist <- mapply(f, pairs_df$race1, pairs_df$race2, pairs_df$time)
 pairs_df %>% 
 	mutate(race1 = factor(race1, levels = c('Black', 'Hispanic', 'Other', 'Asian', 'White')),
 		   race2 = factor(race2, levels = c('Black', 'Hispanic', 'Other', 'Asian', 'White'))) %>% 
+	group_by(race1, race2) %>% 
+	mutate(total_dist = mean(dist)) %>% 
 	ggplot() + 
-	aes(x = time, y = dist) +
+	aes(x = time, y = dist, fill = total_dist) +
 	geom_path() + 
 	facet_grid(race1~race2) + 
 	theme_map() + 
-	geom_area(alpha = .5, fill = 'blue')
+	geom_area(alpha = .8) + 
+	theme(plot.background = element_rect(fill = "#333333")) +
+	scale_fill_viridis(name = 'Similarity', 
+					   trans = 'log')
+	
 ```
 
 # Average pairwise separations (or affinities)
@@ -367,15 +374,24 @@ Darker colors indicate averaged mobility patterns that are more similar.
 ```{r}
 pairs_df %>% 
 	# mutate(dist = ifelse(race1 == race2, NA, dist)) %>% 
-	mutate(race1 = factor(race1, levels = c('Black', 'Hispanic', 'Other', 'Asian', 'White')),
-		   race2 = factor(race2, levels = c('Black', 'Hispanic', 'Other', 'Asian', 'White'))) %>% 
+	mutate(race1 = factor(race1, levels = c('Black', 'Hispanic','Asian', 'Other', 'White')),
+		   race2 = factor(race2, levels = c('Black', 'Hispanic', 'Asian', 'Other', 'White'))) %>% 
 	group_by(race1, race2) %>%
 	summarise(dist = mean(dist)) %>% 
+	ungroup() %>% 
+	# mutate(dist = max(dist) - dist) %>% 
 	ggplot() + 
-	aes(x = race1, y = race2, fill = -dist) +
-	geom_tile() + 
-	# scale_fill_continuous(low = 'white', high = 'steelblue') +
-	scale_fill_viridis()
+	aes(x = race1, y = race2, fill = dist) +
+	geom_tile(size = .3, color = 'black') + 
+	theme_minimal() + 
+	scale_fill_viridis(name = 'Similarity', 
+					   trans = 'log') + 
+	ggtitle('Mean Mobility Similarity') +
+	theme(axis.title.x=element_blank(),
+		  axis.ticks.x=element_blank(),
+		  axis.title.y=element_blank(),
+		  axis.ticks.y=element_blank())
+	
 
 
 ```
