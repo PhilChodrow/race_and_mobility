@@ -14,6 +14,7 @@ library(rgdal, quietly = T)
 library(maptools, quietly = T)
 library(ggthemes, quietly = T)
 library(scales, quietly = T)
+library(viridis, quietly = T)
 ```
 
 
@@ -118,7 +119,6 @@ temporal_means <- data %>%
 
 temporal_means <- temporal_means / rowSums(temporal_means)
 
-
 tab <- data %>% group_by(tract, time) %>% 
 	summarise_each(funs = c('sum'), - tract, -time) %>% 
 	gather(key = race, value = n, -tract, -time) %>% 
@@ -160,7 +160,7 @@ plot_tracts %>%
 	geom_polygon(size = 0) +
 	facet_wrap(~time) + 
 	theme_map() +
-	scale_fill_continuous(limits = c(0,.5), oob=squish)
+	scale_fill_viridis(limits = c(0,.5), oob=squish)
 
 ```
 
@@ -171,23 +171,6 @@ tab %>%
 	aes(x = D, fill = factor(time)) + 
 	geom_density(alpha = .3) + 
 	scale_x_log10()
-```
-
-```{r} 
-# check
-col_names <- c('id', 'time', 'tract', 'h_tract', 'type')
-col_class <- c('integer', 'integer', 'character', 'character', 'character')
-
-check <- fread(input = 'data/time_geo/simulationResults_30.txt',colClasses = col_class, col.names = col_names)
-
-test <- check[time %in% c(143,144)]
-
-test %>% tbl_df %>% 
-	spread(key = time, value = tract) %>% 
-	mutate(x = `143` == `144`) %>% 
-	mutate(x = ifelse(is.na(x), 0, x)) %>% 
-	summarise(x = mean(x))
-
 ```
 
 
@@ -260,7 +243,8 @@ plot_tracts %>%
 	aes(x = long, y = lat, group = group, fill = info) + 
 	geom_polygon(size = 0) +
 	theme_map() +
-	scale_fill_continuous(limits = c(0,.025), oob=squish)
+	# scale_fill_continuous(limits = c(0,.025), oob=squish)
+	scale_fill_viridis(limits = c(0,.025), oob=squish)
 
 ```
 
@@ -273,9 +257,8 @@ grid_tract <- read_csv('throughput/grid_tract.csv')
 
 
 ```{r}
-i = 1
 
-tab <- data %>% filter(time %in% c(1, 80, 144))
+tab <- data 
 
 cells <- grid_tract %>% left_join(tab)
 
@@ -285,17 +268,29 @@ cells <- cells %>% mutate(Asian = Asian * weight,
 				 Other = Other * weight,
 				 White = White * weight)
 
-df <- expand.grid(unique(cells$cell), unique(tab$time))
+cells <- cells %>% 
+	select(-area, -full_area, - weight) %>% 
+	data.table() %>% 
+	setkey('cell', 'time')
+
+
+df <- expand.grid(unique(cells$cell), (1:12)*12)
 names(df) <- c('cell', 'time')
 
-f <- function(i){
-	cells %>% filter(cell == df$cell[i], time == df$time[i]) %>% 
-		dplyr::select(Asian, Black, Hispanic, Other, White) %>% 
+
+f <- function(in_cell, in_time){
+	cells[.(in_cell, in_time), .SD, .SDcols = races] %>% 
 		mutual_info()
+	print(in_cell)
 }
 
-df$J <- 1:nrow(df) %>% as.matrix() %>% 
-	apply(MARGIN = 1, FUN = f)
+cells <- cells %>% select(-tract)
+
+x <- cells[time %in% ((1:1)*6)][, 
+	  info := mutual_info(.SD), 
+	  by = .(cell, time)]
+
+# df$J <- mapply(f, df$cell, df$time)
 
 totals <- cells %>% 
 	mutate(total = Asian + Black + Hispanic + Other + White) %>% 
@@ -355,10 +350,14 @@ pairs_df$dist <- mapply(f, pairs_df$race1, pairs_df$race2, pairs_df$time)
 # Pairwise separations over time. 
 ```{r}
 pairs_df %>% 
+	mutate(race1 = factor(race1, levels = c('Black', 'Hispanic', 'Other', 'Asian', 'White')),
+		   race2 = factor(race2, levels = c('Black', 'Hispanic', 'Other', 'Asian', 'White'))) %>% 
 	ggplot() + 
 	aes(x = time, y = dist) +
 	geom_path() + 
-	facet_grid(race1~race2)
+	facet_grid(race1~race2) + 
+	theme_map() + 
+	geom_area(alpha = .5, fill = 'blue')
 ```
 
 # Average pairwise separations (or affinities)
@@ -375,6 +374,8 @@ pairs_df %>%
 	ggplot() + 
 	aes(x = race1, y = race2, fill = -dist) +
 	geom_tile() + 
-	scale_fill_continuous(low = 'white', high = 'steelblue')
+	# scale_fill_continuous(low = 'white', high = 'steelblue') +
+	scale_fill_viridis()
+
 
 ```

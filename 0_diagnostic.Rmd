@@ -1,0 +1,67 @@
+---
+title: "Diagnostic"
+author: "Phil"
+date: "September 11, 2016"
+output: html_document
+---
+
+# Purpose
+
+This document is a quick diagnostic of our current data from TimeGeo for the race/mobility project
+
+```{r}
+library(data.table)
+library(dplyr)
+
+col_names <- c('id', 'time', 'tract', 'h_tract', 'type')
+col_class <- c('integer', 'integer', 'character', 'character', 'character')
+
+```
+
+```{r}
+
+f <- function(file_name){
+	dt <- fread(input = paste0('data/time_geo/', file_name), 
+		  colClasses = col_class, 
+		  col.names = col_names)
+	dt <- dt[time %in% c(1, 143, 144)]
+	
+	out <- dt %>% mutate(home = type == 'h') %>% 
+		group_by(time) %>% 
+		summarise(m = mean(home)) %>% 
+		spread(key = time, value = m) %>%
+		mutate(file = file_name) %>% 
+		select(file, `1`, `143`, `144`)
+		
+	
+}
+
+d <- data.frame('file' = character(),
+				'1' = numeric(),
+			   '143' = numeric(),
+				'144' = numeric())
+
+files <- list.files('data/time_geo/')
+
+for(file in files){
+	d <- rbind(d, f(file))
+}
+
+```
+
+Interpret this as the percentage of trajectories for which the activity at the given time is of type `h`.  
+
+```{r}
+
+d
+
+```
+
+```{r}
+
+d %>% write.csv('diagnostic.csv',row.names = F)
+
+```
+
+
+
